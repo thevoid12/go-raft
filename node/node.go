@@ -24,6 +24,7 @@ type Node struct {
 	electionTimeoutMax time.Duration
 	electionTimeout    time.Duration
 	heartbeatInterval  time.Duration
+	lastReceivedTime   time.Time // Track last received value from leader
 
 	log         *log.Log
 	commitIndex int
@@ -32,8 +33,12 @@ type Node struct {
 	server *http.Server
 
 	// Channels for signaling
-	heartbeatCh chan bool
+	heartbeatCh chan struct{}
 	shutdownCh  chan struct{}
+	// Leader-specific fields
+	nextIndex    []int
+	matchIndex   []int
+	stateMachine map[string]string
 }
 
 // Initializes node state, including term, votedFor, and log.
@@ -42,6 +47,7 @@ type Node struct {
 //	when initiating there wont be any leader selection until the first election timeout
 func NewNode(id int, peers []string, address string, cfg config.Config) *Node {
 	return &Node{
+		mu:                 sync.Mutex{},
 		id:                 id,
 		state:              Follower,
 		currentTerm:        0,
@@ -49,15 +55,20 @@ func NewNode(id int, peers []string, address string, cfg config.Config) *Node {
 		peers:              peers,
 		address:            address,
 		leaderID:           -1,
-		heartbeatInterval:  cfg.HeartbeatInterval,
 		electionTimeoutMin: cfg.ElectionTimeoutMin,
 		electionTimeoutMax: cfg.ElectionTimeoutMax,
 		electionTimeout:    utils.RandomElectionTimeout(cfg.ElectionTimeoutMin, cfg.ElectionTimeoutMax),
+		heartbeatInterval:  cfg.HeartbeatInterval,
+		lastReceivedTime:   time.Time{},
 		log:                log.NewLog(),
 		commitIndex:        0,
 		lastApplied:        0,
-		heartbeatCh:        make(chan bool),     // Signals receipt of a heartbeat.
-		shutdownCh:         make(chan struct{}), // Signals when the node should shut down.
+		server:             &http.Server{},
+		heartbeatCh:        make(chan struct{}, 1),
+		shutdownCh:         make(chan struct{}),
+		nextIndex:          []int{},
+		matchIndex:         []int{},
+		stateMachine:       make(map[string]string),
 	}
 }
 
@@ -66,9 +77,10 @@ func NewNode(id int, peers []string, address string, cfg config.Config) *Node {
 // starts the HTTP server and begins the main event loop.
 func (n *Node) Start() {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/heartbeat", n.HandleHeartbeat)
+	mux.HandleFunc("/append_entries", n.HandleAppendEntries)
 	mux.HandleFunc("/request_vote", n.HandleRequestVote)
 	mux.HandleFunc("/client", n.HandleClientRequest)
+	mux.HandleFunc("/inspect", n.HandleInspect)
 
 	n.server = &http.Server{
 		Addr:    n.address,

@@ -29,6 +29,6 @@ func RandomElectionTimeout(min, max time.Duration) time.Duration {
 		return min
 	}
 	timeout := time.Duration(rand.Int63n(diff)) + min
-	log.Printf("RandomElectionTimeout: selected timeout %v", timeout)
+	//log.Printf("RandomElectionTimeout: selected timeout %v", timeout)
 	return timeout
 }

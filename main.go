@@ -4,29 +4,25 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"go-raft/config"
 	"go-raft/node"
-	"sync"
 )
 
 // Retrieve configuration settings (like node addresses).
 // Initializes and starts each node in a separate goroutine so that each can run independently and sim
 // Waits indefinitely to keep the main process alive.
 func main() {
+	id := flag.Int("id", 0, "Node ID")
+	address := flag.String("addr", "localhost:8001", "Node address")
+	flag.Parse()
+
 	cfg := config.GetConfig()
 
-	var wg sync.WaitGroup
-	wg.Add(len(cfg.Peers))
+	n := node.NewNode(*id, cfg.Peers, *address, cfg)
+	n.Start()
 
-	for i, addr := range cfg.Peers {
-		go func(id int, address string) {
-			defer wg.Done()
-			n := node.NewNode(id, cfg.Peers, address, cfg)
-			n.Start()
-		}(i, addr)
-	}
-
-	fmt.Println("Raft cluster is up and running.")
-	wg.Wait()
+	fmt.Printf("Raft node %d is running at %s\n", *id, *address)
+	select {} // Block forever
 }

@@ -8,6 +8,7 @@ type Config struct {
 	HeartbeatInterval  time.Duration
 	ElectionTimeoutMin time.Duration
 	ElectionTimeoutMax time.Duration
+	Timeout            time.Duration
 }
 
 // I didnt use a json or yaml or toml structure to add the configs
@@ -22,8 +23,9 @@ func GetConfig() Config {
 			"localhost:8005",
 		},
 		// the minumun and max as well as heartbeatInterval are not the ideal times used widely it should be around 150-300 milli seconds
-		HeartbeatInterval:  1 * time.Second,  // Leaders send heartbeats every 100ms
-		ElectionTimeoutMin: 10 * time.Second, // Followers wait at least 10 sec minimum
-		ElectionTimeoutMax: 15 * time.Second, //  // Followers wait at least 15 sec max
+		HeartbeatInterval:  5 * time.Second,        // Leaders send heartbeats
+		ElectionTimeoutMin: 30 * time.Second,       // Followers wait at least 10 sec minimum
+		ElectionTimeoutMax: 45 * time.Second,       //  // Followers wait at least 15 sec max
+		Timeout:            500 * time.Millisecond, // 5 sec
 	}
 }

@@ -70,21 +70,29 @@ func (n *Node) runFollower() {
 	timer := time.NewTimer(n.electionTimeout)
 	defer timer.Stop()
 
-	select {
-	case <-timer.C:
-		n.mu.Lock()
-		n.state = Candidate
-		n.mu.Unlock()
-	case <-n.heartbeatCh:
-		if !timer.Stop() {
-			<-timer.C
+	for {
+		select {
+		case <-timer.C:
+			n.mu.Lock()
+			n.state = Candidate
+			golog.Printf("Node %d promoting to candidate as no heartbeat is received/election timeout", n.id)
+			n.mu.Unlock()
+			return // Exit to start candidate logic
+
+		case <-n.heartbeatCh:
+			if !timer.Stop() {
+				<-timer.C // Drain the timer
+			}
+			n.mu.Lock()
+			golog.Printf("HB: Node %d received heartbeat from leader %d", n.id, n.leaderID)
+			n.resetElectionTimeout()
+			timer.Reset(n.electionTimeout)
+			n.mu.Unlock()
+
+		case <-n.shutdownCh:
+			golog.Printf("Node %d shutting down", n.id)
+			return
 		}
-		n.mu.Lock()
-		n.resetElectionTimeout()
-		timer.Reset(n.electionTimeout)
-		n.mu.Unlock()
-	case <-n.shutdownCh:
-		return
 	}
 }
 
@@ -121,9 +129,10 @@ func (n *Node) runCandidate() {
 			n.mu.Lock()
 			defer n.mu.Unlock()
 
+			//there is a leader who got already present
 			if resp.Term > n.currentTerm {
 				n.currentTerm = resp.Term
-				n.state = Follower
+				n.state = Follower //depromoting it to follower
 				n.votedFor = -1
 				return
 			}
@@ -145,10 +154,23 @@ func (n *Node) runCandidate() {
 		return
 	}
 
+	//This is the quorum implementation
 	if votes > len(n.peers)/2 {
 		n.state = Leader
 		n.leaderID = n.id
+		golog.Printf("************************************************************")
 		golog.Printf("Node %d became Leader for term %d", n.id, n.currentTerm)
+		golog.Printf("************************************************************")
+
+		// Initialize nextIndex and matchIndex
+		lastLogIndex := n.log.GetLastIndex()
+		n.nextIndex = make([]int, len(n.peers))
+		n.matchIndex = make([]int, len(n.peers))
+		for i := range n.peers {
+			n.nextIndex[i] = lastLogIndex + 1
+			n.matchIndex[i] = 0
+		}
+
 		go n.startHeartbeats()
 	} else {
 		n.state = Follower
@@ -166,50 +188,137 @@ func (n *Node) startHeartbeats() {
 	defer ticker.Stop()
 
 	for {
-		n.mu.Lock()
-		if n.state != Leader {
+		select {
+		case <-ticker.C:
+			n.mu.Lock()
+			if n.state != Leader {
+				n.mu.Unlock()
+				return
+			}
+			currentTerm := n.currentTerm
 			n.mu.Unlock()
+
+			var wg sync.WaitGroup
+			for i, peer := range n.peers {
+				if i == n.id {
+					continue // Skip sending heartbeat to self
+				}
+				wg.Add(1)
+				go func(i int, peer string) {
+					defer wg.Done()
+
+					n.mu.Lock()
+					prevLogIndex := n.nextIndex[i] - 1
+					prevLogTerm := 0
+					if prevLogIndex > 0 {
+						entry, ok := n.log.GetEntry(prevLogIndex - 1) // Zero-based indexing
+						if ok {
+							prevLogTerm = entry.Term
+						}
+					}
+
+					entries := []log.LogEntry{}
+					if n.nextIndex[i]-1 < n.log.GetLastIndex() {
+						allEntries := n.log.GetEntries()
+						if n.nextIndex[i]-1 < len(allEntries) {
+							entries = allEntries[n.nextIndex[i]-1:]
+						}
+					}
+
+					req := AppendEntriesRequest{
+						Term:         currentTerm,
+						LeaderID:     n.id,
+						PrevLogIndex: prevLogIndex,
+						PrevLogTerm:  prevLogTerm,
+						Entries:      entries,
+						LeaderCommit: n.commitIndex,
+					}
+					n.mu.Unlock()
+
+					golog.Printf("Leader %d sending AppendEntries to %s", n.id, peer)
+					resp, err := n.SendAppendEntries(peer, req)
+					if err != nil {
+						golog.Printf("Leader %d: Failed to send AppendEntries to %s: %v", n.id, peer, err)
+						return
+					}
+
+					n.mu.Lock()
+					defer n.mu.Unlock()
+
+					if resp.Term > n.currentTerm {
+						n.currentTerm = resp.Term
+						n.state = Follower
+						n.votedFor = -1
+						return
+					}
+
+					if resp.Success {
+						n.nextIndex[i] = prevLogIndex + len(entries) + 1
+						n.matchIndex[i] = n.nextIndex[i] - 1
+
+						// Update commitIndex
+						for idx := n.commitIndex + 1; idx <= n.log.GetLastIndex(); idx++ {
+							entry, ok := n.log.GetEntry(idx - 1)
+							if !ok || entry.Term != n.currentTerm {
+								continue
+							}
+							count := 1 // Count the leader itself
+							for j := range n.peers {
+								if j == n.id {
+									continue
+								}
+								if n.matchIndex[j] >= idx {
+									count++
+								}
+							}
+							if count > len(n.peers)/2 {
+								n.commitIndex = idx
+								n.apply(entry)
+								golog.Printf("Leader %d: Committed index %d", n.id, n.commitIndex)
+							}
+						}
+					} else {
+						if n.nextIndex[i] > 1 {
+							n.nextIndex[i]--
+						}
+					}
+
+				}(i, peer)
+			}
+			wg.Wait()
+		case <-n.shutdownCh:
 			return
 		}
-		currentTerm := n.currentTerm
-		n.mu.Unlock()
-
-		var wg sync.WaitGroup
-		for i, peer := range n.peers {
-			if i == n.id {
-				continue
-			}
-			wg.Add(1)
-			go func(peer string) {
-				defer wg.Done()
-				req := AppendEntriesRequest{
-					Term:     currentTerm,
-					LeaderID: n.id,
-					// Entries can be added for log replication
-				}
-				resp, err := n.SendAppendEntries(peer, req)
-				if err != nil {
-					golog.Printf("Leader %d: Failed to send heartbeat to %s: %v", n.id, peer, err)
-					return
-				}
-
-				n.mu.Lock()
-				defer n.mu.Unlock()
-
-				if resp.Term > n.currentTerm {
-					n.currentTerm = resp.Term
-					n.state = Follower
-					n.votedFor = -1
-				}
-			}(peer)
-		}
-		wg.Wait()
-
-		time.Sleep(n.heartbeatInterval)
 	}
 }
 
 // resetElectionTimeout resets the election timeout with a new random duration
 func (n *Node) resetElectionTimeout() {
 	n.electionTimeout = utils.RandomElectionTimeout(n.electionTimeoutMin, n.electionTimeoutMax)
+}
+
+func (n *Node) HandleInspect(w http.ResponseWriter, r *http.Request) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	response := struct {
+		State        string            `json:"state"`
+		CurrentTerm  int               `json:"current_term"`
+		VotedFor     int               `json:"voted_for"`
+		CommitIndex  int               `json:"commit_index"`
+		LastApplied  int               `json:"last_applied"`
+		LogEntries   []log.LogEntry    `json:"log_entries"`
+		StateMachine map[string]string `json:"state_machine"`
+	}{
+		State:        n.state.String(),
+		CurrentTerm:  n.currentTerm,
+		VotedFor:     n.votedFor,
+		CommitIndex:  n.commitIndex,
+		LastApplied:  n.lastApplied,
+		LogEntries:   n.log.GetEntries(),
+		StateMachine: n.stateMachine,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
 }
