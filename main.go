@@ -22,11 +22,11 @@ func main() {
 	for i, addr := range cfg.Peers {
 		go func(id int, address string) {
 			defer wg.Done()
-			n := node.NewNode(id, cfg.Peers, address)
+			n := node.NewNode(id, cfg.Peers, address, cfg)
 			n.Start()
 		}(i, addr)
 	}
 
-	fmt.Println("Raft cluster is up and running......")
+	fmt.Println("Raft cluster is up and running.")
 	wg.Wait()
 }

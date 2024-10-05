@@ -1,18 +1,22 @@
 // Handles Remote Procedure Calls (RPCs) like RequestVote and AppendEntries and basically
 // handles all the heartbeat logics here
+
 package node
 
 import (
 	"bytes"
 	"encoding/json"
-	"io/ioutil"
+	"io"
+
 	"net/http"
+	"time"
 )
 
 // RequestVote RPC structures
 type RequestVoteRequest struct {
 	Term        int `json:"term"`
 	CandidateID int `json:"candidate_id"`
+	// TODO: Additional fields like LastLogIndex and LastLogTerm can be added
 }
 
 type RequestVoteResponse struct {
@@ -24,7 +28,7 @@ type RequestVoteResponse struct {
 type AppendEntriesRequest struct {
 	Term     int `json:"term"`
 	LeaderID int `json:"leader_id"`
-	// TODO: add Additional fields like PrevLogIndex, PrevLogTerm, Entries, LeaderCommit
+	// TODO: Additional fields like PrevLogIndex, PrevLogTerm, Entries, LeaderCommit can be added
 }
 
 type AppendEntriesResponse struct {
@@ -32,8 +36,7 @@ type AppendEntriesResponse struct {
 	Success bool `json:"success"`
 }
 
-// HandleRequestVote handles incoming RequestVote RPCs.
-// it processes incoming vote requests, updates state, and responds
+// HandleRequestVote processes incoming RequestVote RPCs
 func (n *Node) HandleRequestVote(w http.ResponseWriter, r *http.Request) {
 	var req RequestVoteRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -50,7 +53,7 @@ func (n *Node) HandleRequestVote(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.Term < n.currentTerm {
-		// Reject vote
+		// Reply false if term is outdated
 	} else {
 		if req.Term > n.currentTerm {
 			n.currentTerm = req.Term
@@ -59,6 +62,7 @@ func (n *Node) HandleRequestVote(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if n.votedFor == -1 || n.votedFor == req.CandidateID {
+			// Grant vote
 			n.votedFor = req.CandidateID
 			resp.VoteGranted = true
 			// Reset election timeout
@@ -70,7 +74,7 @@ func (n *Node) HandleRequestVote(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
-// HandleHeartbeat handles incoming AppendEntries RPCs (heartbeats)
+// HandleHeartbeat processes incoming AppendEntries RPCs (heartbeats)
 func (n *Node) HandleHeartbeat(w http.ResponseWriter, r *http.Request) {
 	var req AppendEntriesRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -98,6 +102,11 @@ func (n *Node) HandleHeartbeat(w http.ResponseWriter, r *http.Request) {
 		resp.Success = true
 		// Reset election timeout
 		n.resetElectionTimeout()
+		// Signal heartbeat receipt
+		select {
+		case n.heartbeatCh <- true:
+		default:
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -113,7 +122,11 @@ func (n *Node) SendRequestVote(peer string, req RequestVoteRequest) (RequestVote
 		return resp, err
 	}
 
-	httpResp, err := http.Post("http://"+peer+"/request_vote", "application/json", bytes.NewBuffer(body))
+	client := &http.Client{
+		Timeout: 500 * time.Millisecond,
+	}
+
+	httpResp, err := client.Post("http://"+peer+"/request_vote", "application/json", bytes.NewBuffer(body))
 	if err != nil {
 		return resp, err
 	}
@@ -123,7 +136,7 @@ func (n *Node) SendRequestVote(peer string, req RequestVoteRequest) (RequestVote
 		return resp, err
 	}
 
-	bodyBytes, err := ioutil.ReadAll(httpResp.Body)
+	bodyBytes, err := io.ReadAll(httpResp.Body)
 	if err != nil {
 		return resp, err
 	}
@@ -144,7 +157,11 @@ func (n *Node) SendAppendEntries(peer string, req AppendEntriesRequest) (AppendE
 		return resp, err
 	}
 
-	httpResp, err := http.Post("http://"+peer+"/heartbeat", "application/json", bytes.NewBuffer(body))
+	client := &http.Client{
+		Timeout: 500 * time.Millisecond,
+	}
+
+	httpResp, err := client.Post("http://"+peer+"/heartbeat", "application/json", bytes.NewBuffer(body))
 	if err != nil {
 		return resp, err
 	}
@@ -154,7 +171,7 @@ func (n *Node) SendAppendEntries(peer string, req AppendEntriesRequest) (AppendE
 		return resp, err
 	}
 
-	bodyBytes, err := ioutil.ReadAll(httpResp.Body)
+	bodyBytes, err := io.ReadAll(httpResp.Body)
 	if err != nil {
 		return resp, err
 	}

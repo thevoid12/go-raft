@@ -2,52 +2,62 @@
 package node
 
 import (
+	"go-raft/config"
 	"go-raft/log"
 	"go-raft/utils"
 	golog "log"
 	"net/http"
-
 	"sync"
 	"time"
 )
 
 type Node struct {
-	mu                sync.Mutex
-	id                int
-	state             State
-	currentTerm       int
-	votedFor          int
-	peers             []string
-	address           string
-	leaderID          int
-	electionTimeout   time.Duration
-	heartbeatInterval time.Duration
+	mu                 sync.Mutex
+	id                 int
+	state              State
+	currentTerm        int
+	votedFor           int
+	peers              []string
+	address            string
+	leaderID           int
+	electionTimeoutMin time.Duration
+	electionTimeoutMax time.Duration
+	electionTimeout    time.Duration
+	heartbeatInterval  time.Duration
 
 	log         *log.Log
 	commitIndex int
 	lastApplied int
 
 	server *http.Server
+
+	// Channels for signaling
+	heartbeatCh chan bool
+	shutdownCh  chan struct{}
 }
 
 // Initializes node state, including term, votedFor, and log.
 // Initially everybody is a follower and there wont be any leader because
 //
 //	when initiating there wont be any leader selection until the first election timeout
-func NewNode(id int, peers []string, address string) *Node {
+func NewNode(id int, peers []string, address string, cfg config.Config) *Node {
 	return &Node{
-		id:                id,
-		state:             Follower,
-		currentTerm:       0,
-		votedFor:          -1,
-		peers:             peers,
-		address:           address,
-		leaderID:          -1,
-		electionTimeout:   utils.RandomElectionTimeout(),
-		heartbeatInterval: 100 * time.Millisecond,
-		log:               log.NewLog(),
-		commitIndex:       0,
-		lastApplied:       0,
+		id:                 id,
+		state:              Follower,
+		currentTerm:        0,
+		votedFor:           -1,
+		peers:              peers,
+		address:            address,
+		leaderID:           -1,
+		heartbeatInterval:  cfg.HeartbeatInterval,
+		electionTimeoutMin: cfg.ElectionTimeoutMin,
+		electionTimeoutMax: cfg.ElectionTimeoutMax,
+		electionTimeout:    utils.RandomElectionTimeout(cfg.ElectionTimeoutMin, cfg.ElectionTimeoutMax),
+		log:                log.NewLog(),
+		commitIndex:        0,
+		lastApplied:        0,
+		heartbeatCh:        make(chan bool),     // Signals receipt of a heartbeat.
+		shutdownCh:         make(chan struct{}), // Signals when the node should shut down.
 	}
 }
 

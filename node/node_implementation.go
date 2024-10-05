@@ -43,9 +43,7 @@ func (n *Node) HandleClientRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	n.log.Append(entry)
 
-	// TODO: Implement log replication to followers
 	// For simplicity, we'll assume immediate commit if leader
-
 	n.commitIndex = len(n.log.GetEntries()) - 1
 	golog.Printf("Leader %d committed command: %s", n.id, cmd.Command)
 
@@ -70,18 +68,31 @@ func (n *Node) run() {
 
 func (n *Node) runFollower() {
 	timer := time.NewTimer(n.electionTimeout)
-	<-timer.C
+	defer timer.Stop()
 
-	n.mu.Lock()
-	n.state = Candidate
-	n.mu.Unlock()
+	select {
+	case <-timer.C:
+		n.mu.Lock()
+		n.state = Candidate
+		n.mu.Unlock()
+	case <-n.heartbeatCh:
+		if !timer.Stop() {
+			<-timer.C
+		}
+		n.mu.Lock()
+		n.resetElectionTimeout()
+		timer.Reset(n.electionTimeout)
+		n.mu.Unlock()
+	case <-n.shutdownCh:
+		return
+	}
 }
 
 func (n *Node) runCandidate() {
 	n.mu.Lock()
 	n.currentTerm += 1
-	n.votedFor = n.id
 	currentTerm := n.currentTerm
+	n.votedFor = n.id
 	n.state = Candidate
 	n.resetElectionTimeout()
 	n.mu.Unlock()
@@ -200,5 +211,5 @@ func (n *Node) startHeartbeats() {
 
 // resetElectionTimeout resets the election timeout with a new random duration
 func (n *Node) resetElectionTimeout() {
-	n.electionTimeout = utils.RandomElectionTimeout()
+	n.electionTimeout = utils.RandomElectionTimeout(n.electionTimeoutMin, n.electionTimeoutMax)
 }
