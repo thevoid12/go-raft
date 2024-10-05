@@ -5,13 +5,13 @@ package main
 
 import (
 	"fmt"
-	"raft/config"
-	"raft/node"
+	"go-raft/config"
+	"go-raft/node"
 	"sync"
 )
 
 // Retrieve configuration settings (like node addresses).
-// Initializes and starts each node in a separate goroutine.
+// Initializes and starts each node in a separate goroutine so that each can run independently and sim
 // Waits indefinitely to keep the main process alive.
 func main() {
 	cfg := config.GetConfig()
