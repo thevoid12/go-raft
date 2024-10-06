@@ -65,3 +65,17 @@ func (l *Log) Truncate(index int) {
 		l.entries = l.entries[:index]
 	}
 }
+
+// check if the log term and log index are upto date
+func (l *Log) IsUpToDate(lastLogIndex int, lastLogTerm int) bool {
+	currentLastTerm := l.GetLastTerm()
+	currentLastIndex := l.GetLastIndex()
+
+	if lastLogTerm > currentLastTerm {
+		return true
+	}
+	if lastLogTerm == currentLastTerm && lastLogIndex >= currentLastIndex {
+		return true
+	}
+	return false
+}

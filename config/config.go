@@ -24,8 +24,8 @@ func GetConfig() Config {
 		},
 		// the minumun and max as well as heartbeatInterval are not the ideal times used widely it should be around 150-300 milli seconds
 		HeartbeatInterval:  5 * time.Second,        // Leaders send heartbeats
-		ElectionTimeoutMin: 30 * time.Second,       // Followers wait at least 10 sec minimum
-		ElectionTimeoutMax: 45 * time.Second,       //  // Followers wait at least 15 sec max
+		ElectionTimeoutMin: 10 * time.Second,       // Followers wait at least 10 sec minimum
+		ElectionTimeoutMax: 11 * time.Second,       //  // Followers wait at least 15 sec max
 		Timeout:            500 * time.Millisecond, // 5 sec
 	}
 }

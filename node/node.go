@@ -46,11 +46,14 @@ type Node struct {
 //
 //	when initiating there wont be any leader selection until the first election timeout
 func NewNode(id int, peers []string, address string, cfg config.Config) *Node {
+	if id <= 0 || id > len(peers) {
+		golog.Fatalf("Invalid node ID %d. Must be between 1 and %d.", id, len(peers))
+	}
 	return &Node{
 		mu:                 sync.Mutex{},
 		id:                 id,
 		state:              Follower,
-		currentTerm:        0,
+		currentTerm:        1,
 		votedFor:           -1,
 		peers:              peers,
 		address:            address,

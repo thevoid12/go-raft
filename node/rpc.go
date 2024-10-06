@@ -1,6 +1,3 @@
-// Handles Remote Procedure Calls (RPCs) like RequestVote and AppendEntries and basically
-// handles all the heartbeat logics here
-
 package node
 
 import (
@@ -12,13 +9,15 @@ import (
 	"io"
 	golog "log"
 	"net/http"
+	"strings"
 )
 
 // RequestVote RPC structures
 type RequestVoteRequest struct {
-	Term        int `json:"term"`
-	CandidateID int `json:"candidate_id"`
-	// TODO: Additional fields like LastLogIndex and LastLogTerm can be added
+	Term         int `json:"term"`
+	CandidateID  int `json:"candidate_id"`
+	LastLogIndex int `json:"last_log_index"`
+	LastLogTerm  int `json:"last_log_term"`
 }
 
 type RequestVoteResponse struct {
@@ -30,17 +29,16 @@ type RequestVoteResponse struct {
 type AppendEntriesRequest struct {
 	Term         int            `json:"term"`
 	LeaderID     int            `json:"leader_id"`
-	PrevLogIndex int            `json:"prev_log_index"` //Ensure log consistency by checking the previous log entry.
-	PrevLogTerm  int            `json:"prev_log_term"`  //Ensure log consistency by checking the previous log entry.
+	PrevLogIndex int            `json:"prev_log_index"`
+	PrevLogTerm  int            `json:"prev_log_term"`
 	Entries      []log.LogEntry `json:"entries"`
 	LeaderCommit int            `json:"leader_commit"`
 }
 
 type AppendEntriesResponse struct {
-	Term    int  `json:"term"`
-	Success bool `json:"success"`
-	// For optimization, include the index up to which entries are matched
-	MatchIndex int `json:"match_index,omitempty"`
+	Term       int  `json:"term"`
+	Success    bool `json:"success"`
+	MatchIndex int  `json:"match_index,omitempty"`
 }
 
 // HandleRequestVote processes incoming RequestVote RPCs
@@ -50,6 +48,15 @@ func (n *Node) HandleRequestVote(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid RequestVote Request", http.StatusBadRequest)
 		return
 	}
+
+	// Validate CandidateID and Term
+	if req.CandidateID <= 0 || req.Term <= 0 {
+		http.Error(w, "Invalid CandidateID or Term", http.StatusBadRequest)
+		golog.Printf("Node %d: Received invalid RequestVote from Candidate %d for term %d", n.id, req.CandidateID, req.Term)
+		return
+	}
+
+	golog.Printf("Node %d: Received RequestVote from Candidate %d for term %d", n.id, req.CandidateID, req.Term)
 
 	n.mu.Lock()
 	defer n.mu.Unlock()
@@ -63,17 +70,22 @@ func (n *Node) HandleRequestVote(w http.ResponseWriter, r *http.Request) {
 		// Reply false if term is outdated
 	} else {
 		if req.Term > n.currentTerm {
+			// Update term if request has a higher term
 			n.currentTerm = req.Term
 			n.votedFor = -1
 			n.state = Follower
+			golog.Printf("Node %d: Term updated to %d by RequestVote from %d", n.id, n.currentTerm, req.CandidateID)
 		}
 
-		if n.votedFor == -1 || n.votedFor == req.CandidateID {
+		// Check if we can grant a vote based on log consistency
+		if (n.votedFor == -1 || n.votedFor == req.CandidateID) &&
+			(req.LastLogTerm > n.log.GetLastTerm() ||
+				(req.LastLogTerm == n.log.GetLastTerm() && req.LastLogIndex >= n.log.GetLastIndex())) {
 			// Grant vote
 			n.votedFor = req.CandidateID
 			resp.VoteGranted = true
-			// Reset election timeout
 			n.resetElectionTimeout()
+			golog.Printf("Node %d: Granted vote to Candidate %d for term %d", n.id, req.CandidateID, req.Term)
 		}
 	}
 
@@ -91,7 +103,7 @@ func (n *Node) SendRequestVote(peer string, req RequestVoteRequest) (RequestVote
 	}
 	cfg := config.GetConfig()
 	client := &http.Client{
-		Timeout: cfg.Timeout,
+		Timeout: 2 * cfg.Timeout, // Increase timeout to avoid early failures
 	}
 
 	httpResp, err := client.Post("http://"+peer+"/request_vote", "application/json", bytes.NewBuffer(body))
@@ -101,7 +113,7 @@ func (n *Node) SendRequestVote(peer string, req RequestVoteRequest) (RequestVote
 	defer httpResp.Body.Close()
 
 	if httpResp.StatusCode != http.StatusOK {
-		return resp, err
+		return resp, fmt.Errorf("received non-OK status code: %d", httpResp.StatusCode)
 	}
 
 	bodyBytes, err := io.ReadAll(httpResp.Body)
@@ -126,11 +138,11 @@ func (n *Node) SendAppendEntries(peer string, req AppendEntriesRequest) (AppendE
 	}
 
 	cfg := config.GetConfig()
-	client := &http.Client{ //it will try until the timeout to fullfil the request
-		Timeout: cfg.Timeout,
+	client := &http.Client{
+		Timeout: 2 * cfg.Timeout, // Increase timeout to avoid network delays
 	}
 
-	httpResp, err := client.Post("http://"+peer+"/append_entries", "application/json", bytes.NewBuffer(body)) // Correct endpoint
+	httpResp, err := client.Post("http://"+peer+"/append_entries", "application/json", bytes.NewBuffer(body))
 	if err != nil {
 		return resp, err
 	}
@@ -163,8 +175,6 @@ func (n *Node) HandleAppendEntries(w http.ResponseWriter, r *http.Request) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
-	golog.Printf("Node %d received AppendEntries from Leader %d for term %d", n.id, req.LeaderID, req.Term)
-
 	resp := AppendEntriesResponse{
 		Term:    n.currentTerm,
 		Success: false,
@@ -180,7 +190,7 @@ func (n *Node) HandleAppendEntries(w http.ResponseWriter, r *http.Request) {
 	if req.Term > n.currentTerm {
 		n.currentTerm = req.Term
 		n.state = Follower
-		n.votedFor = -1
+		n.votedFor = -1 // Reset votedFor when a higher term is encountered
 	} else if req.Term == n.currentTerm {
 		// If term is the same, ensure the node is a follower
 		n.state = Follower
@@ -195,7 +205,8 @@ func (n *Node) HandleAppendEntries(w http.ResponseWriter, r *http.Request) {
 	// Send signal to heartbeatCh to indicate a heartbeat was received
 	select {
 	case n.heartbeatCh <- struct{}{}:
-		golog.Printf("Node %d: Heartbeat signal sent to heartbeatCh", n.id)
+		// Heartbeat sent to heartbeatch
+		golog.Printf("Heartbeat sent to heartbeatch")
 	default:
 		golog.Printf("Node %d: Heartbeat channel already full, skipping send", n.id)
 	}
@@ -208,6 +219,8 @@ func (n *Node) HandleAppendEntries(w http.ResponseWriter, r *http.Request) {
 		}
 		prevEntry, ok := n.log.GetEntry(req.PrevLogIndex - 1) // Zero-based
 		if !ok || prevEntry.Term != req.PrevLogTerm {
+			// Mismatch in logs, truncate and reject the AppendEntries request
+			n.log.Truncate(req.PrevLogIndex)
 			json.NewEncoder(w).Encode(resp)
 			return
 		}
@@ -252,13 +265,14 @@ func (n *Node) HandleAppendEntries(w http.ResponseWriter, r *http.Request) {
 // apply applies a committed log entry to the state machine
 func (n *Node) apply(entry log.LogEntry) {
 	// Simple key-value command parsing
-	// Example command: "set x=1"
-	var key, value string
-	_, err := fmt.Sscanf(entry.Command, "set %s=%s", &key, &value)
-	if err != nil {
-		golog.Printf("Node %d: Failed to parse command '%s': %v", n.id, entry.Command, err)
+	parts := strings.Split(entry.Command, "=")
+	if len(parts) != 2 {
+		golog.Printf("Node %d: Failed to parse command '%s': invalid format", n.id, entry.Command)
 		return
 	}
+
+	key := strings.TrimSpace(parts[0][4:]) // Remove "set " from the key
+	value := strings.TrimSpace(parts[1])   // Trim spaces from the value
 
 	n.stateMachine[key] = value
 	golog.Printf("Node %d: Applied command: set %s=%s", n.id, key, value)

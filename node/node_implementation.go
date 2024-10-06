@@ -57,8 +57,10 @@ func (n *Node) run() {
 	for {
 		switch n.state {
 		case Follower:
+			golog.Printf("Node %d: State changed to Follower", n.id)
 			n.runFollower()
 		case Candidate:
+			golog.Printf("Node %d: State changed to candidate", n.id)
 			n.runCandidate()
 		case Leader:
 			n.runLeader()
@@ -75,18 +77,19 @@ func (n *Node) runFollower() {
 		case <-timer.C:
 			n.mu.Lock()
 			n.state = Candidate
-			golog.Printf("Node %d promoting to candidate as no heartbeat is received/election timeout", n.id)
 			n.mu.Unlock()
+			golog.Printf("Node %d promoting to candidate as no heartbeat is received/election timeout", n.id)
 			return // Exit to start candidate logic
 
 		case <-n.heartbeatCh:
-			if !timer.Stop() {
-				<-timer.C // Drain the timer
-			}
 			n.mu.Lock()
-			golog.Printf("HB: Node %d received heartbeat from leader %d", n.id, n.leaderID)
+			// Reset election timeout if heartbeat received
+			if !timer.Stop() {
+				<-timer.C // Drain the timer if it fired
+			}
 			n.resetElectionTimeout()
 			timer.Reset(n.electionTimeout)
+			golog.Printf("Node %d received heartbeat from leader %d", n.id, n.leaderID)
 			n.mu.Unlock()
 
 		case <-n.shutdownCh:
@@ -98,27 +101,34 @@ func (n *Node) runFollower() {
 
 func (n *Node) runCandidate() {
 	n.mu.Lock()
+	// Increment the term when transitioning to candidate
 	n.currentTerm += 1
 	currentTerm := n.currentTerm
 	n.votedFor = n.id
-	n.state = Candidate
 	n.resetElectionTimeout()
+	golog.Printf("Node %d: Promoting to Candidate for term %d", n.id, currentTerm)
 	n.mu.Unlock()
 
-	votes := 1
+	votes := 1 // Vote for self
 	var voteMu sync.Mutex
 	var wg sync.WaitGroup
 
 	for i, peer := range n.peers {
-		if i == n.id {
-			continue
+		peerID := i + 1 // Adjust for 1-based Node IDs
+		if peerID == n.id {
+			continue // Skip self
 		}
 		wg.Add(1)
 		go func(peer string) {
 			defer wg.Done()
+			lastLogIndex := n.log.GetLastIndex()
+			lastLogTerm := n.log.GetLastTerm()
+
 			req := RequestVoteRequest{
-				Term:        currentTerm,
-				CandidateID: n.id,
+				Term:         currentTerm,
+				CandidateID:  n.id,
+				LastLogIndex: lastLogIndex,
+				LastLogTerm:  lastLogTerm,
 			}
 			resp, err := n.SendRequestVote(peer, req)
 			if err != nil {
@@ -129,17 +139,18 @@ func (n *Node) runCandidate() {
 			n.mu.Lock()
 			defer n.mu.Unlock()
 
-			//there is a leader who got already present
 			if resp.Term > n.currentTerm {
 				n.currentTerm = resp.Term
-				n.state = Follower //depromoting it to follower
+				n.state = Follower
 				n.votedFor = -1
+				golog.Printf("Node %d: Term updated to %d by ResponseVote from %s", n.id, n.currentTerm, peer)
 				return
 			}
 
 			if resp.VoteGranted {
 				voteMu.Lock()
 				votes += 1
+				golog.Printf("Node %d: Received vote from %s (Total votes: %d)", n.id, peer, votes)
 				voteMu.Unlock()
 			}
 		}(peer)
@@ -154,12 +165,11 @@ func (n *Node) runCandidate() {
 		return
 	}
 
-	//This is the quorum implementation
 	if votes > len(n.peers)/2 {
 		n.state = Leader
 		n.leaderID = n.id
 		golog.Printf("************************************************************")
-		golog.Printf("Node %d became Leader for term %d", n.id, n.currentTerm)
+		golog.Printf("Node %d became Leader for term %d with %d votes", n.id, n.currentTerm, votes)
 		golog.Printf("************************************************************")
 
 		// Initialize nextIndex and matchIndex
@@ -175,6 +185,7 @@ func (n *Node) runCandidate() {
 	} else {
 		n.state = Follower
 		n.resetElectionTimeout()
+		golog.Printf("Node %d: Did not receive majority (%d votes). Reverting to Follower", n.id, votes)
 	}
 }
 
@@ -200,8 +211,9 @@ func (n *Node) startHeartbeats() {
 
 			var wg sync.WaitGroup
 			for i, peer := range n.peers {
-				if i == n.id {
-					continue // Skip sending heartbeat to self
+				peerID := i + 1 // Assuming node IDs start at 1
+				if peerID == n.id {
+					continue //skip heartbeat to self
 				}
 				wg.Add(1)
 				go func(i int, peer string) {
@@ -235,7 +247,7 @@ func (n *Node) startHeartbeats() {
 					}
 					n.mu.Unlock()
 
-					golog.Printf("Leader %d sending AppendEntries to %s", n.id, peer)
+					golog.Printf("Leader %d sending heartbeat to %s", n.id, peer)
 					resp, err := n.SendAppendEntries(peer, req)
 					if err != nil {
 						golog.Printf("Leader %d: Failed to send AppendEntries to %s: %v", n.id, peer, err)
@@ -264,9 +276,11 @@ func (n *Node) startHeartbeats() {
 							}
 							count := 1 // Count the leader itself
 							for j := range n.peers {
-								if j == n.id {
+								peerID := j + 1 // Assuming node IDs start at 1
+								if peerID == n.id {
 									continue
 								}
+
 								if n.matchIndex[j] >= idx {
 									count++
 								}
@@ -285,6 +299,7 @@ func (n *Node) startHeartbeats() {
 
 				}(i, peer)
 			}
+
 			wg.Wait()
 		case <-n.shutdownCh:
 			return
