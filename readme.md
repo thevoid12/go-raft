@@ -17,6 +17,7 @@ This project is an implementation of the [Raft consensus algorithm](https://raft
 - Go routines and channels for concurrency
 
 ## Getting Started
+![Architecture Diagram](client/raft-arc-img.PNG)
 
 ### Prerequisites
 
