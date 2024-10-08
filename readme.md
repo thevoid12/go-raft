@@ -12,7 +12,7 @@ This project is an implementation of the [Raft consensus algorithm](https://raft
 - Follower, Candidate, and Leader states
 - Leader election with timeouts
 - Heartbeat mechanism to maintain leadership
-- Log replication (if implemented)
+- Log replication 
 - Graceful node shutdown
 - Go routines and channels for concurrency
 
