@@ -3,9 +3,6 @@
 
 This project is an implementation of the [Raft consensus algorithm](https://raft.github.io/) in Go for total order Broadcasting. It allows distributed systems to achieve consensus across multiple nodes, ensuring reliable data replication. The algorithm is particularly useful for ensuring leader election and maintaining a replicated log across distributed systems.
 
-## here is my go-raft's  demo video:
-
-[![go raft- demo of raft algorithm implementation for total order broadcast from scratch](https://img.youtube.com/vi/G2I4g0kFN8M/hqdefault.jpg )](https://youtu.be/G2I4g0kFN8M)
 
 ## Features
 
